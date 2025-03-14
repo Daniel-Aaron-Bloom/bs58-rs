@@ -352,6 +352,70 @@ impl<'a, I: AsRef<[u8]>> DecodeBuilder<'a, I> {
 /// `const` trait implementations and `&mut` are unstable. These methods will eventually be
 /// deprecated once the primary interfaces can be converted into `const fn` directly.
 impl<'a, 'b> DecodeBuilder<'a, &'b [u8]> {
+    /// Get the length of the decoded input.
+    ///
+    /// Returns the length in bytes of the decoded array.
+    /// # Examples
+    ///
+    /// ```rust
+    /// const _: () = {
+    ///     const SIZE: usize = {
+    ///         let Ok(size) = bs58::decode(b"EUYUqQf".as_slice()).len_const() else {
+    ///             panic!()
+    ///         };
+    ///         assert!(matches!(size, 5));
+    ///         size
+    ///     };
+    ///     let Ok(output) = bs58::decode(b"EUYUqQf".as_slice()).into_array_const::<SIZE>() else {
+    ///         panic!()
+    ///     };
+    ///     assert!(matches!(&output, b"world"));
+    /// };
+    /// ```
+    pub const fn len_const(&self) -> Result<usize> {
+        assert!(
+            matches!(self.check, Check::Disabled),
+            "checksums in const aren't supported (why are you using this API at runtime)",
+        );
+        get_decoded_len(self.input, self.alpha)
+    }
+
+    /// [`Self::len_const`] but the result will be unwrapped, turning any error into a panic
+    /// message via [`Error::unwrap_const`], as a simple `len_const().unwrap()` isn't
+    /// possible yet.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// const _: () = {
+    ///     const SIZE: usize = bs58::decode(b"EUYUqQf".as_slice()).len_const_unwrap();
+    ///     const SIZE2: usize = bs58::decode(b"11EUYUqQf".as_slice()).len_const_unwrap();
+    ///     assert!(matches!(SIZE, 5));
+    ///     assert!(matches!(SIZE2, 7));
+    ///     let Ok(output) = bs58::decode(b"EUYUqQf".as_slice()).into_array_const::<SIZE>() else {
+    ///         panic!()
+    ///     };
+    ///     assert!(matches!(&output, b"world"));
+    /// };
+    /// ```
+    ///
+    /// ```rust
+    /// const _: () = {
+    ///     assert!(matches!(
+    ///         bs58::decode(b"he11owor1d".as_slice())
+    ///             .with_alphabet(bs58::Alphabet::RIPPLE)
+    ///             .len_const_unwrap(),
+    ///         7,
+    ///     ));
+    /// };
+    /// ```
+    pub const fn len_const_unwrap(self) -> usize {
+        match self.len_const() {
+            Ok(result) => result,
+            Err(err) => err.unwrap_const(),
+        }
+    }
+
     /// Decode into a new array.
     ///
     /// Returns the decoded array as bytes.
@@ -538,6 +602,48 @@ fn decode_cb58_into(
             expected_checksum: b,
         })
     }
+}
+
+const fn get_decoded_len(input: &[u8], alpha: &Alphabet) -> Result<usize> {
+    let zero = alpha.encode[0];
+
+    let mut index = 0;
+    let mut val = 0;
+    let mut i = 0;
+
+    while i < input.len() && input[i] == zero {
+        index += 1;
+        i += 1;
+    }
+
+    while i < input.len() {
+        let c = input[i];
+        if c > 127 {
+            return Err(Error::NonAsciiCharacter { index: i });
+        }
+
+        let byte = alpha.decode[c as usize] as usize;
+        if byte == 0xFF {
+            return Err(Error::InvalidCharacter {
+                character: c as char,
+                index: i,
+            });
+        }
+        val = val * 58 + byte;
+        while val > 0xFF {
+            val >>= 8;
+            index += 1;
+        }
+
+        i += 1;
+    }
+
+    while val > 0 {
+        val >>= 8;
+        index += 1;
+    }
+
+    Ok(index)
 }
 
 const fn decode_into_const<const N: usize>(input: &[u8], alpha: &Alphabet) -> Result<[u8; N]> {
